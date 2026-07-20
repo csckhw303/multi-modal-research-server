@@ -1,0 +1,15 @@
+# env files (secrets)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Supabase local dev artifacts
+supabase/.branches/
+supabase/.temp/
