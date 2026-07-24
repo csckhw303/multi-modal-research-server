@@ -10,7 +10,19 @@ class ProjectCreate(BaseModel):
     name: str
     description: str
 
-
+class ProjectSetting(BaseModel):
+    embedding_model: str
+    rag_strategy: str
+    agent_type: str
+    chunks_per_search: int
+    final_context_size: int
+    similarity_threshold: float
+    number_of_queries: int
+    reranking_enabled: bool
+    reranking_model: str
+    vector_weight: float
+    keyword_weight: float
+    
 @router.post("/api/projects")
 async def create_project(project: ProjectCreate, clerk_id: str = Depends(get_current_user)):
     try:
@@ -124,6 +136,24 @@ async def get_project_settings(project_id: str, clerk_id: str = Depends(get_curr
         return {
             "message": "Project settings retrieved successfully",
             "data": response.data[0]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    
+@router.put("/api/projects/{project_id}/settings")
+async def update_project_settings(project_id: str, settings:ProjectSetting, clerk_id: str = Depends(get_current_user)):
+    try:
+        project = supabase.table("projects").select("id").eq("id",project_id).eq("clerk_id", clerk_id).execute()
+        if not project.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        project_settings_result = supabase.table("project_settings").update(settings.model_dump()).eq("project_id", project_id).execute()
+        if not project_settings_result.data:
+            raise HTTPException(status_code=500, detail="Failed to update project settings")
+        return {
+            "message": "Project settings updated successfully",
+            "data": project_settings_result.data[0]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

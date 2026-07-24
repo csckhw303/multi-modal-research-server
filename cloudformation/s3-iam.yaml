@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  S3 bucket for multi-modal-research documents, plus an IAM user scoped
+  to read/write/delete/list access on that bucket only.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Globally-unique S3 bucket name (lowercase, no underscores).
+  AllowedOrigin:
+    Type: String
+    Description: >
+      Origin allowed to call the bucket via presigned URLs (e.g. your
+      frontend URL). Use http://localhost:3000 for local dev.
+
+Resources:
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods:
+              - GET
+              - PUT
+              - HEAD
+            AllowedOrigins:
+              - !Ref AllowedOrigin
+            AllowedHeaders:
+              - "*"
+            ExposedHeaders:
+              - ETag
+            MaxAge: 3000
+
+  AppUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: multi-modal-research-s3
+
+  AppUserPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: multi-modal-research-s3-access
+      Users:
+        - !Ref AppUser
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ObjectAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub "${DocumentsBucket.Arn}/*"
+          - Sid: BucketListing
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !GetAtt DocumentsBucket.Arn
+
+  AppUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref AppUser
+
+Outputs:
+  BucketName:
+    Value: !Ref DocumentsBucket
+  AccessKeyId:
+    Value: !Ref AppUserAccessKey
+  SecretAccessKey:
+    Value: !GetAtt AppUserAccessKey.SecretAccessKey
+    Description: "Retrieve via: aws cloudformation describe-stacks --stack-name <name> --query \"Stacks[0].Outputs\" — this value is only ever shown here, AWS does not store it for later retrieval."
