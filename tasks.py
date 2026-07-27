@@ -19,9 +19,9 @@ from langchain_core.messages import HumanMessage
 
 llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)
 embedding_model = OpenAIEmbeddings(
-    model="text-embedding-3-large",
-    dimensions = 1536
-    )  # Assuming you have an OpenAI embedding class available
+    model=os.getenv("EMBEDDING_MODEL"),
+    dimensions=1536
+)
 celery_app = Celery(
     'document_processor',
     broker='redis://localhost:6379/0' ,# Redis broker URL Queue  
