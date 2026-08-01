@@ -18,7 +18,9 @@ dependencies = [
     "unstructured[all-docs] (==0.18.11)",
     "langchain (==0.3.27)",
     "langchain-community (==0.3.27)",
-    "langchain-openai (==0.3.28)"
+    "langchain-openai (==0.3.28)",
+    "scrapingbee (>=2.1.0,<3.0.0)",
+    "structlog (>=26.1.0,<27.0.0)"
 ]
 
 [tool.poetry]
