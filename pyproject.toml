@@ -7,24 +7,47 @@ authors = [
 ]
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "fastapi (>=0.139.2,<0.140.0)",
-    "uvicorn (>=0.51.0,<0.52.0)",
-    "supabase (>=2.31.0,<3.0.0)",
-    "python-dotenv (>=1.2.2,<2.0.0)",
-    "clerk-backend-api (>=6.0.1,<7.0.0)",
-    "boto3 (>=1.43.54,<2.0.0)",
-    "celery (>=5.6.3,<6.0.0)",
-    "redis (>=8.0.1,<9.0.0)",
-    "unstructured[all-docs] (==0.18.11)",
-    "langchain (==0.3.27)",
-    "langchain-community (==0.3.27)",
-    "langchain-openai (==0.3.28)",
-    "scrapingbee (>=2.1.0,<3.0.0)",
-    "structlog (>=26.1.0,<27.0.0)"
+  "fastapi>=0.121.2,<0.122.0",
+  "uvicorn>=0.38.0,<0.39.0",
+  "supabase>=2.24.0,<3.0.0",
+  "python-dotenv>=1.2.1,<2.0.0",
+  "clerk-backend-api>=4.0.0,<5.0.0",
+  "boto3>=1.40.74,<2.0.0",
+  "celery>=5.5.3,<6.0.0",
+  "langchain>=1.0.8,<2.0.0",
+  "langchain-community>=0.4.1,<1.0.0",
+  "langchain-openai>=1.0.3,<2.0.0",
+  "langgraph>=1.2.10,<2.0.0",
+  "unstructured[all-docs]==0.18.11",
+  "scrapingbee>=2.0.2,<3.0.0",
+  "redis>=7.0.1,<8.0.0",
+  "ipykernel>=7.1.0,<8.0.0",
+  "ddgs>=9.9.1,<10.0.0",
+  "langchain-tavily>=0.2.13,<0.3.0",
+  "ragas>=0.4.0,<0.5.0",
+  "datasets>=4.4.1,<5.0.0",
+  "pytest>=9.0.2,<10.0.0",
+  "structlog>=24.4.0,<25.0.0",
+  "torch>=2.13.0,<3.0.0",
+  "torchvision>=0.28.0,<1.0.0",
 ]
 
 [tool.poetry]
 package-mode = false
+
+# torch/torchvision are transitive deps of unstructured[all-docs] (layout/table detection
+# models). This server has no GPU, so pin both to the CPU-only wheels to avoid pulling in
+# the ~4.5GB of nvidia-* CUDA packages and triton that the default PyPI wheel depends on.
+# Both must come from the same build (cpu vs cuda) or torchvision's compiled ops won't
+# match torch's ABI (e.g. "operator torchvision::nms does not exist").
+[tool.poetry.dependencies]
+torch = {source = "pytorch-cpu"}
+torchvision = {source = "pytorch-cpu"}
+
+[[tool.poetry.source]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

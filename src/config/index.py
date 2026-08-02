@@ -35,6 +35,17 @@ if not os.getenv("SCRAPINGBEE_API_KEY"):
     raise ValueError("SCRAPINGBEE_API_KEY must be set in .env file")
 
 
+if (
+    not os.getenv("LANGSMITH_API_KEY")
+    or not os.getenv("LANGSMITH_TRACING_V2")
+    or not os.getenv("LANGSMITH_PROJECT")
+    or not os.getenv("LANGSMITH_ENDPOINT")
+):
+    raise ValueError(
+        "LANGSMITH_API_KEY, LANGSMITH_TRACING_V2, LANGSMITH_PROJECT and LANGSMITH_ENDPOINT must be set in .env file"
+    )
+
+
 appConfig = {
     "supabase_api_url": os.getenv("SUPABASE_API_URL"),
     "supabase_secret_key": os.getenv("SUPABASE_SECRET_KEY"),
@@ -47,4 +58,8 @@ appConfig = {
     "redis_url": os.getenv("REDIS_URL"),
     "openai_api_key": os.getenv("OPENAI_API_KEY"),
     "scrapingbee_api_key": os.getenv("SCRAPINGBEE_API_KEY"),
+    "langsmith_api_key": os.getenv("LANGSMITH_API_KEY"),
+    "langsmith_tracing_v2": os.getenv("LANGSMITH_TRACING_V2"),
+    "langsmith_project": os.getenv("LANGSMITH_PROJECT"),
+    "langsmith_endpoint": os.getenv("LANGSMITH_ENDPOINT"),
 }
