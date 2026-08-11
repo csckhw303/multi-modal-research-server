@@ -1,8 +1,9 @@
 from src.services.supabase import supabase
 from fastapi import HTTPException
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.services.llm import openAI
+from src.services.cohere import cohereReranker
 from src.models.index import QueryVariations
 
 
@@ -292,6 +293,46 @@ def rrf_rank_and_fuse(search_results_list, weights=None, k=60):
     return [all_chunks[chunk_id] for chunk_id in sorted_chunk_ids]
 
 
+def rerank_chunks(
+    query: str,
+    chunks: List[Dict],
+    model: str = "rerank-english-v3.0",
+    top_n: Optional[int] = None,
+) -> List[Dict]:
+    """Rerank retrieved chunks against the query using Cohere's rerank model.
+
+    Falls back to the original (pre-rerank) ordering, truncated to top_n, if the
+    Cohere call fails, so a reranker outage degrades retrieval quality rather than
+    breaking it.
+    """
+    if not chunks:
+        return []
+
+    documents = [chunk.get("content", "") for chunk in chunks]
+
+    try:
+        results = cohereReranker.rerank(
+            documents=documents,
+            query=query,
+            model=model,
+            top_n=top_n or len(chunks),
+        )
+
+        reranked_chunks = []
+        for result in results:
+            chunk = chunks[result["index"]]
+            chunk["rerank_score"] = result["relevance_score"]
+            reranked_chunks.append(chunk)
+
+        print(
+            f"🎯 Reranked {len(chunks)} chunks -> top {len(reranked_chunks)} via Cohere ({model})"
+        )
+        return reranked_chunks
+    except Exception as e:
+        print(f"⚠️ Reranking failed: {e}. Falling back to original ranking.")
+        return chunks[:top_n] if top_n else chunks
+
+
 def generate_query_variations(original_query: str, num_queries: int = 3) -> List[str]:
     """Generate query variations using LLM"""
     system_prompt = f"""Generate {num_queries-1} alternative ways to phrase this question for document search. Use different keywords and synonyms while maintaining the same intent. Return exactly {num_queries-1} variations."""
@@ -315,3 +356,73 @@ def generate_query_variations(original_query: str, num_queries: int = 3) -> List
 
         traceback.print_exc()  # ✅ Full stack trace
         return [original_query]
+
+
+def reformulate_query_with_history(
+    current_query: str, 
+    chat_history: List[Dict[str, str]] = None
+) -> str:
+    """
+    Reformulate vague queries into standalone queries using chat history.
+    
+    Converts context-dependent queries (e.g., "tell me more about it") into 
+    standalone queries that can be searched effectively.
+    
+    Args:
+        current_query: The user's current query (may reference previous context)
+        chat_history: List of previous messages with 'role' and 'content' keys
+        
+    Returns:
+        Reformulated standalone query, or original if already clear/no history
+        
+    Example:
+        >>> history = [
+        ...     {"role": "user", "content": "What is transformer architecture?"},
+        ...     {"role": "assistant", "content": "Transformers use self-attention..."}
+        ... ]
+        >>> reformulate_query_with_history("Tell me more about it", history)
+        "Tell me more about transformer architecture and self-attention mechanisms"
+    """
+    # If no history or query is already specific, return as-is
+    if not chat_history or len(chat_history) == 0:
+        return current_query
+    
+    # Format history for context (last 3 turns = 6 messages)
+    history_text = "\n".join([
+        f"{msg['role'].capitalize()}: {msg['content']}" 
+        for msg in chat_history[-6:]
+    ])
+    
+    system_prompt = """You are a query reformulation assistant. Your job is to convert context-dependent queries into standalone queries that can be searched effectively.
+
+Rules:
+1. If the query references previous context (e.g., "it", "that", "more details", "elaborate"), reformulate it into a complete standalone query
+2. If the query is already clear and standalone, return it EXACTLY as-is
+3. Keep the reformulated query concise and search-friendly
+4. Preserve the user's intent and question type
+
+Return ONLY the reformulated query, nothing else."""
+
+    try:
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"""Conversation history:
+{history_text}
+
+Current query: {current_query}
+
+Reformulated standalone query:""")
+        ]
+        
+        response = openAI["chat_llm"].invoke(messages)
+        reformulated = response.content.strip()
+        
+        # Log for debugging
+        if reformulated.lower() != current_query.lower():
+            print(f"🔄 Query reformulated: '{current_query}' → '{reformulated}'")
+        
+        return reformulated
+        
+    except Exception as e:
+        print(f"⚠️ Query reformulation failed: {e}")
+        return current_query  # Fallback to original

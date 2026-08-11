@@ -177,15 +177,17 @@ def check_input_guardrails(user_message: str) -> InputGuardrailCheck:
 # TOOLS
 # =============================================================================
 
-def create_rag_tool(project_id: str):
+def create_rag_tool(project_id: str, chat_history: Optional[List[Dict[str, str]]] = None):
     """
-    Create a RAG search tool bound to a specific project.
+    Create a RAG search tool bound to a specific project with optional chat history.
     
     This factory function creates a tool that is bound to a specific project_id,
-    allowing the agent to search through that project's documents.
+    allowing the agent to search through that project's documents. If chat_history
+    is provided, vague queries will be reformulated into standalone queries.
     
     Args:
         project_id: The UUID of the project whose documents should be searchable
+        chat_history: Optional chat history for query reformulation
         
     Returns:
         A LangChain tool configured for RAG search on the specified project
@@ -211,8 +213,12 @@ def create_rag_tool(project_id: str):
             A Command object with updated messages and citations
         """
         try:
-            # Retrieve context using the existing RAG pipeline
-            texts, images, tables, citations = retrieve_context(project_id, query)
+            # Reformulate query using chat history if available
+            from src.rag.retrieval.utils import reformulate_query_with_history
+            reformulated_query = reformulate_query_with_history(query, chat_history)
+            
+            # Retrieve context using the reformulated query
+            texts, images, tables, citations = retrieve_context(project_id, reformulated_query)
             
             # If no context found, return a message
             if not texts:
@@ -227,7 +233,8 @@ def create_rag_tool(project_id: str):
                     }
                 )
                 
-            # Prepare the response using the existing LLM preparation function
+            # Prepare the response using the original query (not reformulated)
+            # This ensures the answer addresses what the user actually asked
             response = prepare_prompt_and_invoke_llm(
                 user_query=query,
                 texts=texts,
@@ -366,8 +373,8 @@ def create_simple_rag_agent(
         ... )
         >>> result = agent.invoke({"messages": [{"role": "user", "content": "Tell me more"}]})
     """
-    # Create tools list with project-specific RAG tool
-    tools = [create_rag_tool(project_id)]
+    # Create tools list with project-specific RAG tool and chat history
+    tools = [create_rag_tool(project_id, chat_history)]
     
     # Get the system prompt with optional chat history
     system_prompt = get_system_prompt(chat_history=chat_history)

@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ElastiCache Redis — single node, cluster mode disabled, no Multi-AZ —
+  used as the Celery broker/backend. Lives in the private subnets from
+  01-network.yaml, reachable only from EcsTasksSecurityGroup on 6379.
+  Deploy 01-network.yaml first.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: hacprep-rag-mm
+    Description: Must match the ProjectName used in 01-network.yaml.
+
+  CacheNodeType:
+    Type: String
+    Default: cache.t3.micro
+
+Resources:
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: !Sub "${ProjectName} Redis subnet group (private subnets)"
+      SubnetIds: !Split
+        - ","
+        - Fn::ImportValue: !Sub "${ProjectName}-PrivateSubnetIds"
+
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: !Sub "${ProjectName}-api-redis"
+      Engine: redis
+      CacheNodeType: !Ref CacheNodeType
+      NumCacheNodes: 1
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - Fn::ImportValue: !Sub "${ProjectName}-ElastiCacheSecurityGroupId"
+
+Outputs:
+  RedisEndpointAddress:
+    Value: !GetAtt RedisCluster.RedisEndpoint.Address
+    Export:
+      Name: !Sub "${ProjectName}-RedisEndpointAddress"
+
+  RedisEndpointPort:
+    Value: !GetAtt RedisCluster.RedisEndpoint.Port
+    Export:
+      Name: !Sub "${ProjectName}-RedisEndpointPort"
+
+  RedisUrl:
+    Value: !Sub "redis://${RedisCluster.RedisEndpoint.Address}:${RedisCluster.RedisEndpoint.Port}/0"
+    Export:
+      Name: !Sub "${ProjectName}-RedisUrl"

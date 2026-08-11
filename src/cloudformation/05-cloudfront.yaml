@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CloudFront distribution in front of the ALB. Terminates HTTPS for the
+  browser using CloudFront's own default certificate (no ACM cert or
+  custom domain purchase needed) and talks plain HTTP to the ALB on port
+  80, since the ALB has no HTTPS listener. Deploy 02-alb.yaml first.
+
+  Policy choices (matches the console-built distribution this was cloned
+  from):
+  - OriginRequestPolicy = AllViewerExceptHostHeader — forwards Authorization
+    and every other viewer header except Host, which AWS recommends for
+    ALB/API Gateway/Lambda URL origins to avoid origin-side routing
+    confusion from a mismatched Host header.
+  - CachePolicy = UseOriginCacheControlHeaders — caches per the origin's own
+    Cache-Control/Expires headers, falling back to a 24h default TTL when
+    the origin sends neither. ACCEPTED RISK: this API does not currently
+    set Cache-Control on its responses, so authenticated GET responses can
+    be cached at the edge and served across users until that's added. Swap
+    to the CachingDisabled policy (4135ea2d-6df8-44a3-9df3-4b5a84be39ad) if
+    that's not acceptable.
+  - ResponseHeadersPolicy = SimpleCORS — adds CORS headers at the edge.
+    The API's own CORSMiddleware (allow_origins=["*"] in server.py) already
+    sets CORS headers, so watch for duplicate Access-Control-Allow-Origin
+    values in responses; drop this policy if that shows up.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: hacprep-rag-mm
+    Description: Must match the ProjectName used in 02-alb.yaml.
+
+Resources:
+  ApiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${ProjectName} API distribution"
+        Origins:
+          - Id: alb-origin
+            DomainName:
+              Fn::ImportValue: !Sub "${ProjectName}-AlbDnsName"
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: alb-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          # AWS managed policy IDs (fixed, same across every account/region —
+          # double check these against `aws cloudfront list-cache-policies` /
+          # list-origin-request-policies / list-response-headers-policies
+          # before first deploy; CloudFormation will fail loudly on a wrong
+          # ID rather than silently misbehave, so this is safe to verify late).
+          CachePolicyId: 83da9c7e-98b4-4e11-a168-04f0df8e2c65 # Managed-UseOriginCacheControlHeaders
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+          ResponseHeadersPolicyId: 60669652-455b-4ae9-85a4-c4c02393f86c # Managed-SimpleCORS
+
+Outputs:
+  CloudFrontDomainName:
+    Value: !GetAtt ApiDistribution.DomainName
+    Description: Point NEXT_PUBLIC_API_BASE_URL (client) at https://<this value>
+
+  CloudFrontDistributionId:
+    Value: !Ref ApiDistribution

@@ -1,0 +1,333 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ECS cluster, IAM roles, task definitions, and services for the API
+  (behind the ALB) and Celery worker (not behind the ALB). Both tasks run
+  in the public subnets with public IPs, locked down to ALB-only ingress
+  by EcsTasksSecurityGroup (see 01-network.yaml).
+
+  PREREQUISITE — before deploying this stack, create these 5 SecureString
+  parameters in SSM Parameter Store (values only ever entered by hand,
+  never in a template or parameters file):
+    {SsmSecretsPrefix}/CLERK_SECRET_KEY
+    {SsmSecretsPrefix}/OPENAI_API_KEY
+    {SsmSecretsPrefix}/SUPABASE_SECRET_KEY
+    {SsmSecretsPrefix}/SCRAPINGBEE_API_KEY
+    {SsmSecretsPrefix}/LANGSMITH_API_KEY
+
+  Deploy 01-network.yaml and 02-alb.yaml first — this stack imports both.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: hacprep-rag-mm
+    Description: Must match the ProjectName used in 01-network.yaml and 02-alb.yaml.
+
+  ContainerImage:
+    Type: String
+    Description: Full ECR image URI (with tag or @sha256 digest) shared by both tasks.
+
+  SsmSecretsPrefix:
+    Type: String
+    Default: /hacprep-rag-mm
+    Description: >
+      SSM Parameter Store path prefix. The 5 SecureString parameters listed
+      above must already exist under this prefix before this stack deploys.
+
+  S3BucketName:
+    Type: String
+    Default: hacpprep-document-upload
+
+  Domain:
+    Type: String
+    Default: https://multi-modal-research-ui.vercel.app
+    Description: Exact origin of the deployed frontend — checked against Clerk's authorized-party claim.
+
+  ClerkPublishableKey:
+    Type: String
+    Default: pk_test_ZHJpdmluZy1kb2dmaXNoLTIxLmNsZXJrLmFjY291bnRzLmRldiQ
+    Description: Publishable by design — safe as a plain parameter, not a secret.
+
+  SupabaseApiUrl:
+    Type: String
+    Default: https://auqtlwcavymflmexifnz.supabase.co
+
+  EmbeddingModel:
+    Type: String
+    Default: text-embedding-3-large
+
+  LangsmithProject:
+    Type: String
+    Default: multi-modal-research
+
+  LangsmithEndpoint:
+    Type: String
+    Default: https://api.smith.langchain.com
+
+  LangsmithTracingV2:
+    Type: String
+    Default: "true"
+
+  ApiTaskCpu:
+    Type: String
+    Default: "1024"
+  ApiTaskMemory:
+    Type: String
+    Default: "3072"
+  ApiDesiredCount:
+    Type: Number
+    Default: 1
+
+  WorkerTaskCpu:
+    Type: String
+    Default: "2048"
+  WorkerTaskMemory:
+    Type: String
+    Default: "6144"
+  WorkerDesiredCount:
+    Type: Number
+    Default: 1
+
+Resources:
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ProjectName}-api-cluster"
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}-api"
+      RetentionInDays: 30
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}-worker"
+      RetentionInDays: 30
+
+  # ---------------------------------------------------------------------
+  # IAM — execution role (pulls image + secrets, writes logs) is separate
+  # from the task role (what the app itself can call at runtime: S3 only).
+  # ---------------------------------------------------------------------
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-app-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/*"
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: app-s3-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ObjectAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
+              - Sid: BucketListing
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::${S3BucketName}"
+
+  # ---------------------------------------------------------------------
+  # Task definitions
+  # ---------------------------------------------------------------------
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-api"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: !Ref ApiTaskCpu
+      Memory: !Ref ApiTaskMemory
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ContainerImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Command: ["uvicorn", "src.server:app", "--host", "0.0.0.0", "--port", "8000"]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApiLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: DOMAIN
+              Value: !Ref Domain
+            - Name: EMBEDDING_MODEL
+              Value: !Ref EmbeddingModel
+            - Name: S3_BUCKET_NAME
+              Value: !Ref S3BucketName
+            - Name: SUPABASE_API_URL
+              Value: !Ref SupabaseApiUrl
+            - Name: REDIS_URL
+              Value:
+                Fn::ImportValue: !Sub "${ProjectName}-RedisUrl"
+            - Name: LANGSMITH_ENDPOINT
+              Value: !Ref LangsmithEndpoint
+            - Name: LANGSMITH_PROJECT
+              Value: !Ref LangsmithProject
+            - Name: LANGSMITH_TRACING_V2
+              Value: !Ref LangsmithTracingV2
+            - Name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+              Value: !Ref ClerkPublishableKey
+          Secrets:
+            - Name: CLERK_SECRET_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/CLERK_SECRET_KEY"
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/OPENAI_API_KEY"
+            - Name: SUPABASE_SECRET_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/SUPABASE_SECRET_KEY"
+            - Name: SCRAPINGBEE_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/SCRAPINGBEE_API_KEY"
+            - Name: LANGSMITH_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/LANGSMITH_API_KEY"
+
+  WorkerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-worker"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: !Ref WorkerTaskCpu
+      Memory: !Ref WorkerTaskMemory
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: worker
+          Image: !Ref ContainerImage
+          Essential: true
+          Command: ["celery", "-A", "src.services.celery:celery_app", "worker", "--loglevel=info", "--pool=threads"]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WorkerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: worker
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: DOMAIN
+              Value: !Ref Domain
+            - Name: EMBEDDING_MODEL
+              Value: !Ref EmbeddingModel
+            - Name: S3_BUCKET_NAME
+              Value: !Ref S3BucketName
+            - Name: SUPABASE_API_URL
+              Value: !Ref SupabaseApiUrl
+            - Name: REDIS_URL
+              Value:
+                Fn::ImportValue: !Sub "${ProjectName}-RedisUrl"
+            - Name: LANGSMITH_ENDPOINT
+              Value: !Ref LangsmithEndpoint
+            - Name: LANGSMITH_PROJECT
+              Value: !Ref LangsmithProject
+            - Name: LANGSMITH_TRACING_V2
+              Value: !Ref LangsmithTracingV2
+            - Name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+              Value: !Ref ClerkPublishableKey
+          Secrets:
+            - Name: CLERK_SECRET_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/CLERK_SECRET_KEY"
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/OPENAI_API_KEY"
+            - Name: SUPABASE_SECRET_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/SUPABASE_SECRET_KEY"
+            - Name: SCRAPINGBEE_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/SCRAPINGBEE_API_KEY"
+            - Name: LANGSMITH_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmSecretsPrefix}/LANGSMITH_API_KEY"
+
+  # ---------------------------------------------------------------------
+  # Services
+  # ---------------------------------------------------------------------
+  ApiService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ProjectName}-api-service"
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref ApiTaskDefinition
+      DesiredCount: !Ref ApiDesiredCount
+      LaunchType: FARGATE
+      HealthCheckGracePeriodSeconds: 60
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Split
+            - ","
+            - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnetIds"
+          SecurityGroups:
+            - Fn::ImportValue: !Sub "${ProjectName}-EcsTasksSecurityGroupId"
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8000
+          TargetGroupArn:
+            Fn::ImportValue: !Sub "${ProjectName}-ApiTargetGroupArn"
+
+  WorkerService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ProjectName}-worker-service"
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref WorkerTaskDefinition
+      DesiredCount: !Ref WorkerDesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Split
+            - ","
+            - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnetIds"
+          SecurityGroups:
+            - Fn::ImportValue: !Sub "${ProjectName}-EcsTasksSecurityGroupId"
+          AssignPublicIp: ENABLED
+
+Outputs:
+  ClusterName:
+    Value: !Ref EcsCluster
+  ApiServiceName:
+    Value: !GetAtt ApiService.Name
+  WorkerServiceName:
+    Value: !GetAtt WorkerService.Name

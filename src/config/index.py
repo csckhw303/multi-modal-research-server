@@ -1,7 +1,14 @@
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# stdout/stderr default to the OS codepage (e.g. cp1252 on Windows) when not attached
+# to a UTF-8 terminal, which crashes any print() containing emoji (used throughout the
+# logging in this codebase) with UnicodeEncodeError. Force UTF-8 unconditionally.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 if not os.getenv("SUPABASE_API_URL") or not os.getenv("SUPABASE_SECRET_KEY"):
     raise ValueError(
@@ -12,15 +19,10 @@ if not os.getenv("CLERK_SECRET_KEY") or not os.getenv("DOMAIN"):
     raise ValueError("CLERK_SECRET_KEY and DOMAIN must be set in .env file")
 
 
-if (
-    not os.getenv("S3_BUCKET_NAME")
-    or not os.getenv("AWS_REGION")
-    or not os.getenv("AWS_SECRET_ACCESS_KEY")
-    or not os.getenv("AWS_ACCESS_KEY_ID")
-):
-    raise ValueError(
-        "S3_BUCKET_NAME, AWS_REGION, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set in .env file"
-    )
+# AWS credentials are optional in ECS (uses IAM task role)
+# But S3_BUCKET_NAME and AWS_REGION are always required
+if not os.getenv("S3_BUCKET_NAME") or not os.getenv("AWS_REGION"):
+    raise ValueError("S3_BUCKET_NAME and AWS_REGION must be set in .env file")
 
 
 if not os.getenv("REDIS_URL"):
@@ -30,6 +32,9 @@ if not os.getenv("REDIS_URL"):
 
 if not os.getenv("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY must be set in .env file")
+
+if not os.getenv("COHERE_API_KEY"):
+    raise ValueError("COHERE_API_KEY must be set in .env file")
 
 if not os.getenv("SCRAPINGBEE_API_KEY"):
     raise ValueError("SCRAPINGBEE_API_KEY must be set in .env file")
@@ -57,6 +62,7 @@ appConfig = {
     "aws_access_key_id": os.getenv("AWS_ACCESS_KEY_ID"),
     "redis_url": os.getenv("REDIS_URL"),
     "openai_api_key": os.getenv("OPENAI_API_KEY"),
+    "cohere_api_key": os.getenv("COHERE_API_KEY"),
     "scrapingbee_api_key": os.getenv("SCRAPINGBEE_API_KEY"),
     "langsmith_api_key": os.getenv("LANGSMITH_API_KEY"),
     "langsmith_tracing_v2": os.getenv("LANGSMITH_TRACING_V2"),

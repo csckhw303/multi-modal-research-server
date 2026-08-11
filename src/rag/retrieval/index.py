@@ -6,6 +6,7 @@ from src.rag.retrieval.utils import (
     get_project_document_ids,
     build_context_from_retrieved_chunks,
     generate_query_variations,
+    rerank_chunks,
 )
 from typing import List, Dict
 from src.rag.retrieval.utils import rrf_rank_and_fuse
@@ -57,8 +58,16 @@ def retrieve_context(project_id, user_query):
             )
             print(f"Multi-query hybrid search resulted in: {len(chunks)} chunks")
 
-        # Step 8: Selecting top k chunks
-        chunks = chunks[: project_settings["final_context_size"]]
+        # Step 8: Rerank chunks (if enabled) and select the top k
+        if project_settings.get("reranking_enabled") and chunks:
+            chunks = rerank_chunks(
+                user_query,
+                chunks,
+                model=project_settings.get("reranking_model") or "rerank-english-v3.0",
+                top_n=project_settings["final_context_size"],
+            )
+        else:
+            chunks = chunks[: project_settings["final_context_size"]]
 
         # Step 9: Build the context from the retrieved chunks and format them into a structured context with citations.
         texts, images, tables, citations = build_context_from_retrieved_chunks(chunks)

@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Application Load Balancer, target group, and HTTP listener for the API
+  service. HTTP only (port 80) — this ALB is meant to sit behind CloudFront,
+  which terminates HTTPS for the browser using its own default certificate,
+  so the ALB itself never needs an ACM cert or a 443 listener. Deploy
+  01-network.yaml first; this stack imports its VPC/subnet/security-group
+  outputs.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: hacprep-rag-mm
+    Description: Must match the ProjectName used in 01-network.yaml.
+
+  ApiContainerPort:
+    Type: Number
+    Default: 8000
+
+  HealthCheckPath:
+    Type: String
+    Default: /health
+
+Resources:
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets: !Split
+        - ","
+        - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnetIds"
+      SecurityGroups:
+        - Fn::ImportValue: !Sub "${ProjectName}-AlbSecurityGroupId"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb"
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-api-tg"
+      TargetType: ip
+      Protocol: HTTP
+      Port: !Ref ApiContainerPort
+      ProtocolVersion: HTTP1
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+Outputs:
+  AlbArn:
+    Value: !Ref ApplicationLoadBalancer
+    Export:
+      Name: !Sub "${ProjectName}-AlbArn"
+
+  AlbDnsName:
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub "${ProjectName}-AlbDnsName"
+
+  ApiTargetGroupArn:
+    Value: !Ref ApiTargetGroup
+    Export:
+      Name: !Sub "${ProjectName}-ApiTargetGroupArn"

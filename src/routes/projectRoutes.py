@@ -118,7 +118,7 @@ async def create_project(
             "similarity_threshold": 0.3,
             "number_of_queries": 5,
             "reranking_enabled": True,
-            "reranking_model": "reranker-english-v3.0",
+            "reranking_model": "rerank-english-v3.0",
             "vector_weight": 0.7,
             "keyword_weight": 0.3,
         }

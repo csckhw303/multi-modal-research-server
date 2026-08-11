@@ -167,12 +167,12 @@ def get_supervisor_system_prompt(chat_history: Optional[List[Dict[str, str]]] = 
 
 1. **Project Documents Agent** (rag_search):
    - Searches internal project documents using RAG
-   - Use for project-specific queries, internal documentation, uploaded files
+   - Default first choice for any substantive question — try this before search_web
 
 2. **Web Search Agent** (search_web):
    - Searches the internet for current information
-   - Use for current events, general knowledge, external information
-   - ONLY use this tool if asked by the user or mentioned in the question
+   - Fallback only: use after rag_search comes back empty, or when the user
+     explicitly asks for current events, recent news, or web information
 
 ### Core Responsibilities
 
@@ -180,27 +180,31 @@ def get_supervisor_system_prompt(chat_history: Optional[List[Dict[str, str]]] = 
 - Route queries to the appropriate agent(s) — you MUST NOT answer substantive questions directly
 - For complex queries, coordinate multiple agents in sequence
 - Synthesize results from multiple agents into coherent answers
-- Prioritize project documents for project-specific questions
-- Use web search ONLY if asked by the user or mentioned in the question
 - Use the chat history to understand the context and references in the current question
 
 ### Query Routing Rules
 
-**ALWAYS use tools for:**
-- Any question requiring factual information
-- Project-specific queries
-- Technical questions
-- Current events or news
-- General knowledge questions
-- Analysis or research requests
-
-**Direct response permitted ONLY for:**
+**Step 1 — check for small talk first.** If the message is ONLY a greeting,
+acknowledgment, farewell, or basic question about your own capabilities, respond
+directly with no tool call:
 - Simple greetings (hi, hello, how are you)
 - Acknowledgments (thanks, ok, got it)
 - Basic clarification requests about your capabilities
 - Farewell messages (goodbye, bye)
 
-**ALWAYS use the RAG tool for the questions**
+**Step 2 — for everything else, call `rag_search` FIRST.** For any question seeking
+factual information — including names, terms, technical questions, or anything that
+could plausibly appear in the uploaded documents — you MUST call `rag_search` first,
+even if the topic is unfamiliar to you or sounds like it could be current-events/general
+knowledge. You do not know what the project documents contain until you check them. A
+term you don't personally recognize (e.g. an author's name, an acronym, a product name)
+is more likely to be *in the documents* than to require a web search — do not assume it
+is "general knowledge" just because you don't recognize it.
+
+**Only call `search_web` when:**
+- `rag_search` was already tried for this question and returned no relevant information, OR
+- The user explicitly asks for current events, recent news, or information from the internet
+
 **Return as much information that is given from the RAG tool as possible to the user**
 
 For all other queries, you MUST route to the appropriate agent(s) and synthesize their responses. Your role is coordination and synthesis, not direct knowledge provision.
@@ -221,15 +225,17 @@ For all other queries, you MUST route to the appropriate agent(s) and synthesize
 # RAG AGENT
 # =============================================================================
 
-def create_rag_tool(project_id: str):
+def create_rag_tool(project_id: str, chat_history: Optional[List[Dict[str, str]]] = None):
     """
-    Create a RAG search tool bound to a specific project.
+    Create a RAG search tool bound to a specific project with optional chat history.
     
     This factory function creates a tool that is bound to a specific project_id,
-    allowing the agent to search through that project's documents.
+    allowing the agent to search through that project's documents. If chat_history
+    is provided, vague queries will be reformulated into standalone queries.
     
     Args:
         project_id: The UUID of the project whose documents should be searchable
+        chat_history: Optional chat history for query reformulation
         
     Returns:
         A LangChain tool configured for RAG search on the specified project
@@ -252,8 +258,12 @@ def create_rag_tool(project_id: str):
             A Command object with updated messages and citations
         """
         try:
-            # Retrieve context using the existing RAG pipeline
-            texts, images, tables, citations = retrieve_context(project_id, query)
+            # Reformulate query using chat history if available
+            from src.rag.retrieval.utils import reformulate_query_with_history
+            reformulated_query = reformulate_query_with_history(query, chat_history)
+            
+            # Retrieve context using the reformulated query
+            texts, images, tables, citations = retrieve_context(project_id, reformulated_query)
             
             # If no context found, return a message
             if not texts and not images and not tables:
@@ -268,7 +278,8 @@ def create_rag_tool(project_id: str):
                     }
                 )
                 
-            # Prepare the response using the existing LLM preparation function
+            # Prepare the response using the original query (not reformulated)
+            # This ensures the answer addresses what the user actually asked
             response = prepare_prompt_and_invoke_llm(
                 user_query=query,
                 texts=texts,
@@ -303,7 +314,7 @@ def create_rag_tool(project_id: str):
     return rag_search
 
 
-def create_rag_agent(project_id: str, model: str = "gpt-4o"):
+def create_rag_agent(project_id: str, model: str = "gpt-4o", chat_history: Optional[List[Dict[str, str]]] = None):
     """
     Create a RAG agent for searching project-specific documents.
     
@@ -314,11 +325,12 @@ def create_rag_agent(project_id: str, model: str = "gpt-4o"):
     Args:
         project_id: The UUID of the project whose documents should be searchable
         model: The OpenAI model to use (default: "gpt-4o")
+        chat_history: Optional chat history for query reformulation
         
     Returns:
         A configured LangGraph agent for RAG search
     """
-    tools = [create_rag_tool(project_id)]
+    tools = [create_rag_tool(project_id, chat_history)]
     
     system_prompt = """You are a helpful AI assistant with access to a RAG (Retrieval-Augmented Generation) tool that searches project-specific documents.
 
@@ -415,7 +427,7 @@ Never fabricate information - only use what's found in search results."""
 # SUPERVISOR TOOLS (Wrapped Sub-Agents)
 # =============================================================================
 
-def create_supervisor_tools(project_id: str, model: str = "gpt-4o"):
+def create_supervisor_tools(project_id: str, model: str = "gpt-4o", chat_history: Optional[List[Dict[str, str]]] = None):
     """
     Create supervisor tools that wrap the specialized agents.
     
@@ -428,12 +440,13 @@ def create_supervisor_tools(project_id: str, model: str = "gpt-4o"):
     Args:
         project_id: The UUID of the project for the RAG agent
         model: The OpenAI model to use for both agents (default: "gpt-4o")
+        chat_history: Optional chat history for query reformulation
         
     Returns:
         List of tools (rag_search and search_web) for the supervisor
     """
-    # Create the specialized agents
-    rag_agent = create_rag_agent(project_id, model)
+    # Create the specialized agents with chat history
+    rag_agent = create_rag_agent(project_id, model, chat_history)
     web_agent = create_web_search_agent(model)
     
     @tool
@@ -482,17 +495,15 @@ def create_supervisor_tools(project_id: str, model: str = "gpt-4o"):
     @tool
     def search_web(query: str) -> str:
         """Search the internet for current information.
-        
-        Use this when the user asks about:
-        - Current events or recent news
-        - General knowledge not in project documents
-        - External information or public data
-        - Market trends or industry news
-        - Any information that requires up-to-date web sources
-        
+
+        Only use this AFTER rag_search has already been tried for this question and
+        came back empty/irrelevant, or when the user explicitly asks for current
+        events, recent news, or information from the internet. Do not use this as a
+        first guess for unfamiliar names or terms — check the project documents first.
+
         Args:
             query: Natural language query for web search
-            
+
         Returns:
             Relevant information from web search results
         """
@@ -621,8 +632,8 @@ def create_supervisor_agent(
         >>> print(result["messages"][-1].content)
         >>> print(result.get("citations", []))
     """
-    # Get the supervisor tools (wrapped agents)
-    tools = create_supervisor_tools(project_id, model)
+    # Get the supervisor tools (wrapped agents) with chat history
+    tools = create_supervisor_tools(project_id, model, chat_history)
 
     # Get the system prompt with optional chat history
     system_prompt = get_supervisor_system_prompt(chat_history=chat_history)
