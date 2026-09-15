@@ -13,6 +13,7 @@ request_id_var: ContextVar[Optional[str]] = ContextVar("request_id", default=Non
 user_id_var: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
 project_id_var: ContextVar[Optional[str]] = ContextVar("project_id", default=None)
 
+
 POD_NAME = os.getenv("POD_NAME", "local")
 HOST_NAME = socket.gethostname()
 

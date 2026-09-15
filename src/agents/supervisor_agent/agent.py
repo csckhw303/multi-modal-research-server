@@ -31,7 +31,10 @@ from datetime import datetime
 import os
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.tools import tool
+from deepagents import create_deep_agent
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_tavily import TavilySearch
 from langchain_core.tools.base import InjectedToolCallId
@@ -331,27 +334,32 @@ def create_rag_agent(project_id: str, model: str = "gpt-4o", chat_history: Optio
         A configured LangGraph agent for RAG search
     """
     tools = [create_rag_tool(project_id, chat_history)]
-    
+
     system_prompt = """You are a helpful AI assistant with access to a RAG (Retrieval-Augmented Generation) tool that searches project-specific documents.
 
 For every user question:
 
-1. Do not assume any question is purely conceptual or general.  
-2. Use the `rag_search` tool immediately with a clear and relevant query derived from the user's question.  
-3. Carefully review the retrieved documents and base your entire answer on the RAG results.  
-4. If the retrieved information fully answers the user's question, respond clearly and completely using that information.  
-5. If the retrieved information is insufficient or incomplete, explicitly state that and provide helpful suggestions or guidance based on what you found.  
+1. Do not assume any question is purely conceptual or general.
+2. Use the `rag_search` tool immediately with a clear and relevant query derived from the user's question.
+3. Carefully review the retrieved documents and base your entire answer on the RAG results.
+4. If the retrieved information fully answers the user's question, respond clearly and completely using that information.
+5. If the retrieved information is insufficient or incomplete, explicitly state that and provide helpful suggestions or guidance based on what you found.
 6. Always present answers in a clear, well-structured, and conversational manner.
 
-**Never answer without first querying the RAG tool. This ensures every response is grounded in project-specific context and documentation.**"""
-    
-    agent = create_agent(
+**Never answer without first querying the RAG tool. This ensures every response is grounded in project-specific context and documentation.**
+
+For multi-part or multi-topic questions, use the `write_todos` tool to break the question into sub-questions and track which ones you've answered before composing your final response. For simple, single-fact questions, skip `write_todos` and just call `rag_search` directly.
+
+For multi-part questions, after retrieving results for each sub-question, use `write_file` to save the findings and citations to a note (e.g. `/notes/<slug>.md`) before moving to the next sub-question. Once all sub-questions are answered, use `read_file`/`ls` to review your accumulated notes and compose a final answer that synthesizes across all of them, rather than relying only on the most recent `rag_search` result."""
+
+    agent = create_deep_agent(
         model=model,
         tools=tools,
         system_prompt=system_prompt,
-        state_schema=CustomAgentState
+        state_schema=CustomAgentState,
+        middleware=[TodoListMiddleware(), FilesystemMiddleware()]
     )
-    
+
     return agent
 
 
@@ -617,7 +625,7 @@ def create_supervisor_agent(
         ...     "messages": [{"role": "user", "content": "What does our documentation say about X?"}]
         ... })
         
-        >>> # With chat history
+        >>> # With chat historyreformulate_query_with_history
         >>> history = [
         ...     {"role": "user", "content": "What is attention mechanism?"},
         ...     {"role": "assistant", "content": "Attention is a mechanism that..."}

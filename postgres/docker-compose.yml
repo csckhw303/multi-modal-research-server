@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init/00_roles.sql:/docker-entrypoint-initdb.d/00_roles.sql:ro
+      - ../supabase/migrations/20260720004135_initial_schema.sql:/docker-entrypoint-initdb.d/01_initial_schema.sql:ro
+      - ../supabase/migrations/20260720174018_grant_service_role_privileges.sql:/docker-entrypoint-initdb.d/02_grant_service_role_privileges.sql:ro
+      - ../supabase/migrations/20260726232739_chunk_search_functions.sql:/docker-entrypoint-initdb.d/03_chunk_search_functions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  postgrest:
+    image: postgrest/postgrest:latest
+    container_name: rag-postgrest
+    environment:
+      PGRST_DB_URI: postgres://service_role:service_role_password@postgres:5432/postgres
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: service_role
+      PGRST_JWT_SECRET: local-dev-jwt-secret-do-not-use-in-prod-32chars
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Thin reverse proxy rewriting /rest/v1/* -> /* so the supabase-py client
+  # (which always targets /rest/v1/) can talk to bare PostgREST. Mirrors the
+  # role "pg-gateway" plays in front of postgrest on the Railway deployment.
+  gateway:
+    image: nginx:alpine
+    container_name: rag-pg-gateway
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "3001:8000"
+    depends_on:
+      - postgrest
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
